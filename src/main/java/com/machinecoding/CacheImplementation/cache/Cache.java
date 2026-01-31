@@ -1,16 +1,13 @@
 package com.machinecoding.CacheImplementation.cache;
 
-import ch.qos.logback.core.boolex.EvaluationException;
 import com.machinecoding.CacheImplementation.DataSource;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.*;
+import java.util.function.Function;
 
 public class Cache<KEY, VALUE> {
 
@@ -21,7 +18,10 @@ public class Cache<KEY, VALUE> {
     private final Integer expirationTimeInMilliSecond;
     private final Map<Long, List<Record<VALUE>>> expiryQueue;
     private final Map<AccessDetails, List<Record<VALUE>>> priorityQueue;
+    private final ExecutorService threadPool[];
     private static final Integer THRESHHOLD_SIZE = 500;
+    static final int poolSize = 5;
+
 
     public Cache(DataSource<KEY, VALUE> dataSource, PersistanceAlgorithm persistanceAlgorithm, EvictionAlgorithm evictionAlgorithm, Integer expirationTimeInMilliSecond) {
         this.map = new ConcurrentHashMap<>();
@@ -37,32 +37,55 @@ public class Cache<KEY, VALUE> {
             else
                 return (int)(Objects.equals(first.getAccessCount(), second.getAccessCount()) ? older : first.getAccessCount() - second.getAccessCount());
         });
+
+        this.threadPool = new ExecutorService[5];
+
+        for(int i = 0; i< poolSize; i++){
+            threadPool[i] = Executors.newSingleThreadExecutor();
+        }
     }
 
     public CompletableFuture<VALUE> get(KEY key){
+        return CompletableFuture.supplyAsync(() -> getInAssignedThread(key), threadPool[key.hashCode()%poolSize])
+                .thenCompose(Function.identity());
+    }
+
+    private CompletableFuture<VALUE> getInAssignedThread(KEY key) {
         final CompletableFuture<Record<VALUE>> result;
-        if(map.containsKey(key) && map.get(key).getAccessDetails().getAccesTimeStamps() >= System.currentTimeMillis() - expirationTimeInMilliSecond){
-            result = CompletableFuture.completedFuture(map.get(key));
+        Record<VALUE> record = map.get(key);
+        if(map.containsKey(key) && record.getAccessDetails().getAccesTimeStamps() >= System.currentTimeMillis() - expirationTimeInMilliSecond){
+            result = CompletableFuture.completedFuture(record);
         }else{
+            expiryQueue.get(record.getAccessDetails().getAccesTimeStamps()).remove(record);
+            priorityQueue.get(record.getAccessDetails()).remove(record);
             result = dataSource.get(key).thenApply(value -> addToCache(key, value));
         }
 
-         return result.thenApply((valueRecord) -> {
-             final var accessDetails = valueRecord.getAccessDetails();
-             accessDetails.setAccessCount(accessDetails.getAccessCount()+1);
-             accessDetails.setAccesTimeStamps(System.currentTimeMillis());
+        return result.thenApply((valueRecord) -> {
+            final var accessDetails = valueRecord.getAccessDetails();
+            accessDetails.setAccessCount(accessDetails.getAccessCount() + 1);
+            accessDetails.setAccesTimeStamps(System.currentTimeMillis());
 
 
             priorityQueue.putIfAbsent(valueRecord.getAccessDetails(), new ArrayList<>());
             priorityQueue.get(valueRecord.getAccessDetails()).add(valueRecord);
             return valueRecord.getValue();
-         });
-
+        });
     }
 
     public CompletableFuture<Void> set(KEY key, VALUE value){
+        return CompletableFuture.supplyAsync(() -> setInAssignedThread(key, value), threadPool[key.hashCode()%poolSize])
+                .thenCompose(Function.identity());
+    }
+
+    private CompletableFuture<Void> setInAssignedThread(KEY key, VALUE value) {
+        if(map.containsKey(key)){
+            Record<VALUE>record = map.remove(key);
+            expiryQueue.remove(record.getLoadTime());
+            priorityQueue.remove(record.getAccessDetails());
+        }
         Record<VALUE> valueRecord = new Record<>(value);
-        if(!map.containsKey(key) && map.size() >= THRESHHOLD_SIZE) {
+        if(map.size() >= THRESHHOLD_SIZE) {
             if (evictionAlgorithm.equals(EvictionAlgorithm.LRU)) {
 
             } else {

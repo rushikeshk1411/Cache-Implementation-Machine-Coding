@@ -24,8 +24,9 @@ public class Record<VALUE> implements Comparable<Record<VALUE>>{
     }
 
 
-
-
+    public long getLoadTime() {
+        return loadTime;
+    }
 }
 
 
