@@ -66,7 +66,6 @@ public class Cache<KEY, VALUE> {
             accessDetails.setAccessCount(accessDetails.getAccessCount() + 1);
             accessDetails.setAccesTimeStamps(System.currentTimeMillis());
 
-
             priorityQueue.putIfAbsent(valueRecord.getAccessDetails(), new ArrayList<>());
             priorityQueue.get(valueRecord.getAccessDetails()).add(valueRecord);
             return valueRecord.getValue();
